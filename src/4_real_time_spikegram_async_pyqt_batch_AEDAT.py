@@ -12,7 +12,7 @@ from pyNAVIS.functions import Functions
 # ===== CONFIG =====
 MAX_ADDRESSES = 256
 WINDOW_SEC = 0.25
-UPDATE_MS = 1
+UPDATE_MS = 30
 EVENT_RATE = 3_000_000       # events/sec
 MAX_POINTS_PLOT = 30_000_000      # max points displayed
 # ==================
