@@ -1,109 +1,101 @@
+# real_time_aedat_relative.py
 from pyqtgraph.Qt import QtWidgets, QtCore
 import pyqtgraph as pg
 import numpy as np
 import threading
-import time
-import random
 from collections import deque
+import time
 from pyNAVIS.loaders import Loaders
 from pyNAVIS.main_settings import MainSettings
 from pyNAVIS.functions import Functions
 
-# ===== CONFIG =====
+# ================= CONFIG =================
 MAX_ADDRESSES = 256
-WINDOW_SEC = 0.25
-UPDATE_MS = 30
-EVENT_RATE = 3_000_000       # events/sec
-MAX_POINTS_PLOT = 30_000_000      # max points displayed
-# ==================
+WINDOW_SEC = 0.05               # moving window in seconds
+UPDATE_MS = 30                  # GUI update interval
+CHUNK_SIZE = 100_000            # AEDAT events per batch
+MAX_POINTS_PLOT = 100_000       # max points to plot
+EVENT_RATE_EST = 3_000_000      # estimated events/sec for buffer sizing
+# =========================================
 
-events = deque(maxlen=MAX_POINTS_PLOT)
+# ===== Moving window buffer =====
+events = deque(maxlen=int(WINDOW_SEC * EVENT_RATE_EST))
 lock = threading.Lock()
-start_time = time.time()
 running = True
 
-# ===== Generate per-address colors =====
-# colors = [pg.mkBrush(pg.intColor(i, MAX_ADDRESSES, alpha=200)) for i in range(MAX_ADDRESSES)]
-
-def event_generator():
-    """Simulate high-rate events continuously."""
-    batch_size = 10000
-    while running:
-        t_now = time.time() - start_time
-        addrs = np.random.randint(0, MAX_ADDRESSES, batch_size)
-        times_arr = np.random.uniform(t_now - WINDOW_SEC, t_now, batch_size)
-        with lock:
-            events.extend(zip(times_arr, addrs))
-
-settings = MainSettings(num_channels=128, mono_stereo=1, address_size=4, ts_tick=0.1)
+# ===== Load AEDAT file =====
+# settings = MainSettings(num_channels=128, mono_stereo=1, address_size=2, ts_tick=1)
+# file = Loaders.loadAEDAT('data/sweep_20Hz_5cyc_256ch.aedat.aedat', settings)
+settings = MainSettings(num_channels=128, mono_stereo=1, address_size=4, ts_tick=1)
 file = Loaders.loadAEDAT('data/NAS128Stereo-2025-09-24T17-16-19+0200-ForceOne-0.aedat', settings)
 Functions.adapt_timestamps(file, settings)
+n_file_events = len(file.timestamps)
 
+# ===== Playback start reference =====
+playback_start_time = time.time()
 
+# ===== AEDAT playback thread =====
 def aedat_playback():
-    """Fast continuous playback of AEDAT file in a loop with batching."""
-    chunk_size = 10000       # number of events to append at once
-    n_events = len(file.timestamps)
+    global playback_start_time
+    file_start = file.timestamps[0]
+    file_duration = (file.timestamps[-1] - file_start) / 1e6  # seconds
+    loop_count = 0
 
     while running:
-        loop_start = time.time()
         idx = 0
-        while running and idx < n_events:
-            end = min(idx + chunk_size, n_events)
+        while idx < n_file_events and running:
+            end = min(idx + CHUNK_SIZE, n_file_events)
 
-            # Slice a batch of timestamps/addresses
-            t_batch = file.timestamps[idx:end] / 1000.0   # ms -> s
+            # Relative timestamps for this chunk (seconds)
+            t_batch = (file.timestamps[idx:end] - file_start) / 1e6
+            t_batch += loop_count * file_duration
             a_batch = file.addresses[idx:end]
 
-            # Option 1: Play as fast as possible (no sleep)
-            # ------------------------------------------
-            t_now = time.time() - start_time
-            with lock:
-                events.extend(zip(t_now + (t_batch - t_batch[0]), a_batch))
+            # Align to playback start (relative seconds)
+            t_batch_relative = t_batch - t_batch[0] + (time.time() - playback_start_time)
 
-            # Optional: to approximately match real-time speed,
-            # sleep for the time gap of this chunk
-            gap = t_batch[-1] - t_batch[0]
-            time.sleep(gap)
+            with lock:
+                events.extend(zip(t_batch_relative, a_batch))
+
+            # Sleep to simulate real-time playback
+            chunk_duration = t_batch[-1] - t_batch[0]
+            if chunk_duration > 0:
+                time.sleep(chunk_duration)
 
             idx = end
-        # loop automatically restarts from beginning
 
+        loop_count += 1  # restart file loop
 
-# def event_generator():
-#     inter_event = 1.0 / EVENT_RATE
-#     while running:
-#         t = time.time() - start_time
-#         addr = random.randint(0, MAX_ADDRESSES - 1)
-#         with lock:
-#             events.append((t, addr))
-#         time.sleep(inter_event)  # can batch sleep if EVENT_RATE too high
-
+# ===== GUI update =====
 def update_gui():
-    t_now = time.time() - start_time
+    t_now = time.time() - playback_start_time
     window_start = t_now - WINDOW_SEC
 
     with lock:
-        filtered = [(t, a) for t, a in events if t >= window_start]
-        n = len(filtered)
-        if n > MAX_POINTS_PLOT:
-            indices = np.random.choice(n, MAX_POINTS_PLOT, replace=False)
-            filtered = [filtered[i] for i in indices]
+        if not events:
+            scatter.setData([], [])
+            return
 
-    if filtered:
-        t_arr, a_arr = zip(*filtered)
-        # Assign color per address
-        # brushes = [colors[a] for a in a_arr]
-        scatter.setData(x=np.array(t_arr), y=np.array(a_arr))#, brush=brushes)
+        ts, addrs = zip(*events)
+        ts = np.array(ts)
+        addrs = np.array(addrs)
 
-    else:
-        scatter.setData([], [])
+        mask = ts >= window_start
+        ts_filtered = ts[mask]
+        addrs_filtered = addrs[mask]
 
-    plot.setXRange(max(0, window_start), t_now, padding=0)
+        # Downsample for performance
+        if len(ts_filtered) > MAX_POINTS_PLOT:
+            idxs = np.random.choice(len(ts_filtered), MAX_POINTS_PLOT, replace=False)
+            ts_filtered = ts_filtered[idxs]
+            addrs_filtered = addrs_filtered[idxs]
 
-# ===== GUI =====
+    scatter.setData(x=ts_filtered, y=addrs_filtered)
+    plot.setXRange(max(0, window_start), t_now, padding=0)  # X-axis starts at 0
+
+# ===== GUI setup =====
 app = QtWidgets.QApplication([])
-win = pg.GraphicsLayoutWidget(show=True, title="Dynamic Real-Time Scatter")
+win = pg.GraphicsLayoutWidget(show=True, title="AEDAT Real-Time Scatter (Relative X-axis)")
 plot = win.addPlot()
 plot.setLabel('left', 'Address')
 plot.setLabel('bottom', 'Time (s)')
@@ -121,6 +113,7 @@ def on_close():
 
 app.aboutToQuit.connect(on_close)
 
+# ===== Start playback thread =====
 thread = threading.Thread(target=aedat_playback, daemon=True)
 thread.start()
 

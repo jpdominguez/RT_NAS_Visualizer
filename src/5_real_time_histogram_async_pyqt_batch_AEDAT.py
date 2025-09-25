@@ -10,7 +10,7 @@ from pyNAVIS.functions import Functions
 
 # ===== CONFIG =====
 MAX_ADDRESSES   = 256      # number of channels
-WINDOW_SEC      = 1      # activity window in seconds
+WINDOW_SEC      = 0.05      # activity window in seconds
 UPDATE_MS       = 30       # GUI update rate (ms)
 CHUNK_SIZE      = 10000    # number of events per batch
 MAX_EVENTS      = 100_000
@@ -22,10 +22,9 @@ start_time = time.time()
 running = True
 
 # ===== Load AEDAT file =====
-settings = MainSettings(num_channels=128, mono_stereo=1, address_size=4, ts_tick=1)
-file = Loaders.loadAEDAT(
-    'data/NAS128Stereo-2025-09-24T17-16-19+0200-ForceOne-0.aedat', settings
-)
+settings = MainSettings(num_channels=128, mono_stereo=1, address_size=2, ts_tick=1)
+# file = Loaders.loadAEDAT('data/NAS128Stereo-2025-09-24T17-16-19+0200-ForceOne-0.aedat', settings)
+file = Loaders.loadAEDAT('data/sweep_20Hz_5cyc_256ch.aedat.aedat', settings)
 Functions.adapt_timestamps(file, settings)
 
 # ===== Event playback (looped) =====
@@ -35,7 +34,7 @@ def aedat_playback():
         idx = 0
         while running and idx < n_events:
             end = min(idx + CHUNK_SIZE, n_events)
-            t_batch = file.timestamps[idx:end] / 1000.0  # ms → s
+            t_batch = file.timestamps[idx:end] / 1000000.0  # ms → s
             a_batch = file.addresses[idx:end]
             t_now   = time.time() - start_time
             with lock:
