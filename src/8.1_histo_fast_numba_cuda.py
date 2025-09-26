@@ -4,6 +4,7 @@ import numpy as np
 import threading
 import time
 from numba import njit, prange, cuda
+from numba.cuda.cudadrv.error import CudaSupportError
 
 from pyNAVIS.loaders import Loaders
 from pyNAVIS.main_settings import MainSettings
@@ -13,8 +14,8 @@ from pyNAVIS.functions import Functions
 MAX_ADDRESSES = 256
 WINDOW_SEC = 0.5
 UPDATE_MS = 30
-CHUNK_SIZE = 100_000
-BUFFER_SIZE = 50_000_000   # circular buffer
+CHUNK_SIZE = 200_000
+BUFFER_SIZE = 50_00_000   # circular buffer
 GPU_THRESHOLD = 2_000_000  # events needed to justify GPU
 # ==================
 
@@ -69,9 +70,25 @@ def gpu_histogram(ts, addrs, window_start, max_addr):
                                              window_start, counts_d)
     return counts_d.copy_to_host()
 
-# Check CUDA availability once
-GPU_AVAILABLE = cuda.is_available()
-print("CUDA available:", GPU_AVAILABLE)
+# ===== Robust CUDA availability check =====
+def safe_cuda_available():
+    try:
+        if not cuda.is_available():
+            return False
+        gpus = list(cuda.gpus)
+        if len(gpus) == 0:
+            return False
+        # Try to create and immediately pop a context
+        with gpus[0].get_context():
+            pass
+        return True
+    except CudaSupportError:
+        return False
+    except Exception:
+        return False
+
+GPU_AVAILABLE = safe_cuda_available()
+print("Safe CUDA check:", GPU_AVAILABLE)
 
 # ===== Playback Thread =====
 def aedat_playback():

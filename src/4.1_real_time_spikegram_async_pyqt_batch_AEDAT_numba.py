@@ -9,12 +9,12 @@ from pyNAVIS.main_settings import MainSettings
 from pyNAVIS.functions import Functions
 
 # ================= CONFIG =================
-MAX_ADDRESSES    = 256
-WINDOW_SEC       = 0.05
-UPDATE_MS        = 30
+MAX_ADDRESSES    = 256     # number of possible addresses (Y dimension)
+WINDOW_SEC       = 0.15    # sliding window size
+UPDATE_MS        = 15
 CHUNK_SIZE       = 100_000
-MAX_POINTS_PLOT  = 100_000
-TIME_BINS        = 256
+MAX_POINTS_PLOT  = 10_00000_000
+TIME_BINS        = 256     # number of time bins (X dimension)
 BUFFER_SIZE      = int(WINDOW_SEC * 3_000_000 * 2)
 # ==========================================
 
@@ -27,8 +27,10 @@ lock       = threading.Lock()
 running    = True
 
 # ===== Load AEDAT file =====
-settings = MainSettings(num_channels=128, mono_stereo=1, address_size=4, ts_tick=1)
+settings = MainSettings(num_channels=128, mono_stereo=1,
+                        address_size=4, ts_tick=1)
 file = Loaders.loadAEDAT('data/NAS128Stereo-2025-09-24T17-16-19+0200-ForceOne-0.aedat', settings)
+# file = Loaders.loadAEDAT('data/sweep_20Hz_5cyc_256ch.aedat.aedat', settings)
 Functions.adapt_timestamps(file, settings)
 n_file_events = len(file.timestamps)
 playback_start_time = time.time()
@@ -60,6 +62,7 @@ def downsample_random(ts, ad, max_points):
 
 @njit
 def bin_spikegram(ts, ad, window_start, window_end, max_addr, time_bins):
+    # Output shape: (addresses , time_bins)
     spike_image = np.zeros((max_addr, time_bins), dtype=np.uint8)
     if ts.size == 0:
         return spike_image
@@ -118,26 +121,40 @@ def update_spikegram():
             write_idx, BUFFER_SIZE, window_start, t_now
         )
     ts_ds, ad_ds = downsample_random(ts_win, ad_win, MAX_POINTS_PLOT)
-    spike_image = bin_spikegram(ts_ds, ad_ds, window_start, t_now, MAX_ADDRESSES, TIME_BINS)
+    spike_image = bin_spikegram(ts_ds, ad_ds, window_start, t_now,
+                                MAX_ADDRESSES, TIME_BINS)
     spike_image = np.clip(spike_image * 50, 0, 255)
 
-    # === 🔄 Rotate image 90° to the left ===
-    spike_image = np.rot90(spike_image, k=1)
+    # Visual orientation adjustment (rotate + flip)
+    vis_image = np.rot90(spike_image, k=1)   # rotate 90° left
+    vis_image = np.flipud(vis_image)         # flip vertically
 
-    spikegram_img.setImage(spike_image, autoLevels=False)
+    spikegram_img.setImage(vis_image, autoLevels=False)
+
+        # --- Update X-axis ticks to real seconds ---
+    axis = plot_widget.getAxis('bottom')
+    n_ticks = 5                                  # number of tick marks you want
+    tick_positions = np.linspace(0, TIME_BINS, n_ticks)
+    tick_times = np.linspace(window_start, t_now, n_ticks)
+    ticks = [(pos, f"{time:.3f}") for pos, time in zip(tick_positions, tick_times)]
+    axis.setTicks([ticks])
+    axis.setLabel('Time (s)')
+
+
 
 # ===== GUI setup =====
 app = QtWidgets.QApplication([])
 win = QtWidgets.QWidget()
 layout = QtWidgets.QVBoxLayout()
 win.setLayout(layout)
-win.setWindowTitle("2D Spikegram Real-Time Viewer (Rotated 90° Left)")
+win.setWindowTitle("2D Spikegram Real-Time Viewer")
 
 plot_widget = pg.PlotWidget()
-plot_widget.setLabel('left', 'Time (rotated)')
-plot_widget.setLabel('bottom', 'Address (rotated)')
-plot_widget.setYRange(0, TIME_BINS)
-plot_widget.setXRange(0, MAX_ADDRESSES)
+# 👉 Physical meaning preserved:
+plot_widget.setLabel('left',  'Address')   # rows of original array
+plot_widget.setLabel('bottom','Time bin')  # columns of original array
+plot_widget.setYRange(0, MAX_ADDRESSES)
+plot_widget.setXRange(0, TIME_BINS)
 layout.addWidget(plot_widget)
 
 spikegram_img = pg.ImageItem()
