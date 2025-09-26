@@ -14,7 +14,7 @@ WINDOW_SEC       = 0.05
 UPDATE_MS        = 30
 CHUNK_SIZE       = 100_000
 MAX_POINTS_PLOT  = 100_000
-TIME_BINS        = 500
+TIME_BINS        = 256
 BUFFER_SIZE      = int(WINDOW_SEC * 3_000_000 * 2)
 # ==========================================
 
@@ -36,7 +36,6 @@ playback_start_time = time.time()
 # ===== Numba helpers =====
 @njit
 def filter_window(ts, addrs, n_events, write_idx, buffer_size, window_start, window_end):
-    """Extract events in the moving window."""
     out_ts = np.empty(n_events, dtype=np.float64)
     out_ad = np.empty(n_events, dtype=np.uint16)
     count = 0
@@ -53,7 +52,6 @@ def filter_window(ts, addrs, n_events, write_idx, buffer_size, window_start, win
 
 @njit
 def downsample_random(ts, ad, max_points):
-    """Randomly downsample if too many points."""
     n = ts.size
     if n <= max_points:
         return ts, ad
@@ -62,20 +60,18 @@ def downsample_random(ts, ad, max_points):
 
 @njit
 def bin_spikegram(ts, ad, window_start, window_end, max_addr, time_bins):
-    """Bin events into a 2D spikegram."""
     spike_image = np.zeros((max_addr, time_bins), dtype=np.uint8)
     if ts.size == 0:
         return spike_image
-    bins = np.linspace(window_start, window_end, time_bins+1)
+    bins = np.linspace(window_start, window_end, time_bins + 1)
     digitized = np.empty(ts.size, dtype=np.int32)
     for i in range(ts.size):
-        # find the correct time bin
         for b in range(time_bins):
-            if bins[b] <= ts[i] < bins[b+1]:
+            if bins[b] <= ts[i] < bins[b + 1]:
                 digitized[i] = b
                 break
         else:
-            digitized[i] = time_bins-1
+            digitized[i] = time_bins - 1
     for i in range(ts.size):
         a = ad[i]
         if 0 <= a < max_addr:
@@ -117,10 +113,17 @@ def update_spikegram():
         if n_events == 0:
             spikegram_img.setImage(np.zeros((MAX_ADDRESSES, TIME_BINS), dtype=np.uint8))
             return
-        ts_win, ad_win = filter_window(timestamps, addresses, n_events, write_idx, BUFFER_SIZE, window_start, t_now)
+        ts_win, ad_win = filter_window(
+            timestamps, addresses, n_events,
+            write_idx, BUFFER_SIZE, window_start, t_now
+        )
     ts_ds, ad_ds = downsample_random(ts_win, ad_win, MAX_POINTS_PLOT)
     spike_image = bin_spikegram(ts_ds, ad_ds, window_start, t_now, MAX_ADDRESSES, TIME_BINS)
-    spike_image = np.clip(spike_image*50, 0, 255)
+    spike_image = np.clip(spike_image * 50, 0, 255)
+
+    # === 🔄 Rotate image 90° to the left ===
+    spike_image = np.rot90(spike_image, k=1)
+
     spikegram_img.setImage(spike_image, autoLevels=False)
 
 # ===== GUI setup =====
@@ -128,13 +131,13 @@ app = QtWidgets.QApplication([])
 win = QtWidgets.QWidget()
 layout = QtWidgets.QVBoxLayout()
 win.setLayout(layout)
-win.setWindowTitle("2D Spikegram Real-Time Viewer (CPU Numba Accelerated)")
+win.setWindowTitle("2D Spikegram Real-Time Viewer (Rotated 90° Left)")
 
 plot_widget = pg.PlotWidget()
-plot_widget.setLabel('left', 'Address')
-plot_widget.setLabel('bottom', 'Time (s)')
-plot_widget.setYRange(0, MAX_ADDRESSES)
-plot_widget.setXRange(0, TIME_BINS)
+plot_widget.setLabel('left', 'Time (rotated)')
+plot_widget.setLabel('bottom', 'Address (rotated)')
+plot_widget.setYRange(0, TIME_BINS)
+plot_widget.setXRange(0, MAX_ADDRESSES)
 layout.addWidget(plot_widget)
 
 spikegram_img = pg.ImageItem()
